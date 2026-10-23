@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Attendance System</title>
+<style>
+body{font-family:Arial,sans-serif;background:#fff6f5;color:#401c2b;margin:0;padding:16px}
+header{background:#641b35;color:white;text-align:center;padding:20px;border-radius:12px}
+.card{background:white;padding:18px;margin:18px auto;border-radius:12px;max-width:500px;box-shadow:0 3px 10px #0001}
+input,button{box-sizing:border-box;width:100%;padding:12px;margin:7px 0;border-radius:7px;font-size:16px}
+input{border:1px solid #ccc}
+button{background:#842849;color:white;border:0}
+table{width:100%;border-collapse:collapse;margin-top:12px}
+th,td{padding:8px 4px;border-bottom:1px solid #ddd;text-align:center;font-size:13px}
+.small-btn{padding:8px 4px;font-size:12px}
+.stats{font-weight:bold;color:#842849}
+</style>
+</head>
+<body>
+<header>
+<h1>🎓 Smart Attendance</h1>
+<p>Student Attendance Management System</p>
+</header>
+
+<div class="card">
+<h2>Add Student</h2>
+<input id="name" placeholder="Enter student name">
+<input id="roll" placeholder="Enter roll number">
+<button onclick="addStudent()">Add Student</button>
+</div>
+
+<div class="card">
+<h2>📋 Student Attendance</h2>
+<p>Mark each student's attendance for today.</p>
+<input type="text" id="searchStudent"
+placeholder="Search by name or roll number..."
+oninput="render()"
+style="width:90%;padding:10px;margin:10px 0;border-radius:8px;border:1px solid #ccc;">
+<div id="studentList">No students added yet.</div>
+</div>
+
+<div class="card">
+<h2>📊 Attendance Summary</h2>
+<p class="stats" id="summary">Total Students: 0</p>
+<p>Present: <span id="present">0</span></p>
+<p>Absent: <span id="absent">0</span></p>
+<p>Overall Attendance: <span id="percentage">0%</span></p>
+</div>
+<script>
+const API = "http://127.0.0.1:8081/api/students";
+let students = [];
+
+async function loadStudents() {
+    try {
+        const response = await fetch(API);
+        if (!response.ok) throw new Error("Could not load students");
+        students = await response.json();
+        render();
+    } catch (error) {
+        alert("Java backend se connection nahi hua. Check karo ki server running hai.");
+    }
+}
+
+async function addStudent() {
+    const name = document.getElementById("name").value.trim();
+    const roll = document.getElementById("roll").value.trim();
+
+    if (!name || !roll) {
+        alert("Please enter both student name and roll number.");
+        return;
+    }
+
+    if (students.some(s => s.roll === roll)) {
+        alert("This roll number already exists.");
+        return;
+    }
+
+    try {
+        const response = await fetch(API, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                name: name,
+                roll: roll,
+                days: 0,
+                present: 0,
+                today: ""
+            })
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || "Student could not be saved");
+        }
+
+        document.getElementById("name").value = "";
+        document.getElementById("roll").value = "";
+        await loadStudents();
+        alert("Student added successfully!");
+    } catch (error) {
+        alert(error.message);
+    }
+}
+
+async function mark(index, status) {
+    const student = students[index];
+    const today = new Date().toLocaleDateString("en-CA");
+
+    if (student.today === today) {
+        alert("Attendance already marked for today.");
+        return;
+    }
+
+    const updatedStudent = {
+        ...student,
+        days: Number(student.days || 0) + 1,
+        present: Number(student.present || 0) +
+            (status === "Present" ? 1 : 0),
+        today: today
+    };
+
+    try {
+        const response = await fetch(API, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(updatedStudent)
+        });
+
+        if (!response.ok) throw new Error("Attendance update failed");
+        await loadStudents();
+    } catch (error) {
+        alert(error.message);
+    }
+}
+
+
+
+async function editStudent(index) {
+    const student = students[index];
+    if (!student) return;
+
+    const newName = prompt("Enter student name:", student.name);
+    if (newName === null) return;
+
+    const newRoll = prompt("Enter roll number:", student.roll);
+    if (newRoll === null) return;
+
+    if (!newName.trim() || !newRoll.trim()) {
+        alert("Name and roll number cannot be empty.");
+        return;
+    }
+
+    try {
+        const response = await fetch(API, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                roll: student.roll,
+                newRoll: newRoll.trim(),
+                name: newName.trim()
+            })
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || "Could not update student.");
+        }
+
+        alert("Student updated successfully!");
+        await loadStudents();
+    } catch (error) {
+        alert(error.message);
+    }
+}
+
+async function deleteStudent(index) {
+    const student = students[index];
+
+    if (!student) return;
+
+    if (!confirm("Delete " + student.name + "?")) return;
+
+    try {
+        const response = await fetch(
+            API + "?roll=" + encodeURIComponent(student.roll),
+            { method: "DELETE" }
+        );
+
+        if (!response.ok) {
+            throw new Error("Could not delete student.");
+        }
+
+        alert("Student deleted successfully!");
+        await loadStudents();
+    } catch (error) {
+        alert("Delete failed. Please check the backend server.");
+    }
+}
+
+function render() {
+    const list = document.getElementById("studentList");
+
+    const searchBox = document.getElementById("searchStudent");
+    const query = searchBox ? searchBox.value.trim().toLowerCase() : "";
+    const filtered = students
+        .map((student, index) => ({ student, index }))
+        .filter(item =>
+            String(item.student.name).toLowerCase().includes(query) ||
+            String(item.student.roll).toLowerCase().includes(query)
+        );
+
+    if (filtered.length === 0) {
+        list.textContent = query ? "No matching students found." : "No students added yet.";
+    } else {
+        list.innerHTML = "<table><tr><th>Name</th><th>Roll No.</th><th>Attendance</th><th>Action</th></tr>" +
+            filtered.map(({student: s, index: i}) =>
+                "<tr><td>" + escapeHTML(s.name) +
+                "</td><td>" + escapeHTML(s.roll) +
+                "</td><td><button class='small-btn' onclick='mark(" + i +
+                ",\"Present\")'>Present</button>" +
+                "<button class='small-btn' onclick='mark(" + i +
+                ",\"Absent\")'>Absent</button><br>" +
+                Number(s.present || 0) + "/" +
+                Number(s.days || 0) +
+                "</td><td><button class='small-btn' onclick='editStudent(" + i +
+                ")'>Edit</button> " +
+                "<button class='small-btn' onclick='deleteStudent(" + i +
+                ")'>Delete</button></td></tr>"
+            ).join("") + "</table>";
+    }
+
+    const total = students.length;
+    const present = students.reduce((sum, s) => sum + Number(s.present || 0), 0);
+    const days = students.reduce((sum, s) => sum + Number(s.days || 0), 0);
+
+    document.getElementById("summary").textContent = "Total Students: " + total;
+    document.getElementById("present").textContent = present;
+    document.getElementById("absent").textContent = days - present;
+    document.getElementById("percentage").textContent =
+        (days ? Math.round(present / days * 100) : 0) + "%";
+}
+
+function escapeHTML(text) {
+    return String(text).replace(/[&<>"']/g, c => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+    }[c]));
+}
+
+loadStudents();
+</script>
+
+</body>
+</html>
