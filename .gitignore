@@ -8,3 +8,6 @@ students.json
 # Local backup files
 *.before-auth
 *.before-login
+
+# Local backup files
+*.before-postgres

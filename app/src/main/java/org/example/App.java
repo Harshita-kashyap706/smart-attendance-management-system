@@ -6,6 +6,13 @@ import java.io.*;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.net.URI;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.*;
 import java.util.regex.*;
 
@@ -17,7 +24,7 @@ public class App {
     ).toAbsolutePath();
 
     public static void main(String[] args) throws Exception {
-        loadStudents();
+        initDatabase();
 
         int port = Integer.parseInt(
             System.getenv().getOrDefault("PORT", "8081")
@@ -278,39 +285,111 @@ public class App {
         }
     }
 
-    static void saveStudents() {
+
+    static Connection databaseConnection() throws SQLException {
+        String databaseUrl = System.getenv("DATABASE_URL");
+        String databaseUser = System.getenv("DATABASE_USER");
+        String databasePassword = System.getenv("DATABASE_PASSWORD");
+
+        if (databaseUrl == null || databaseUrl.isBlank()
+                || databaseUser == null || databaseUser.isBlank()
+                || databasePassword == null) {
+            throw new SQLException(
+                "DATABASE_URL, DATABASE_USER, DATABASE_PASSWORD set karo."
+            );
+        }
+
         try {
-            Files.createDirectories(DATA_FILE.getParent());
-            Files.writeString(DATA_FILE, toJson(students),
-                StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            System.err.println("Could not save students: " + e.getMessage());
+            URI uri = URI.create(databaseUrl);
+            String path = uri.getPath();
+
+            if (uri.getHost() == null || path == null || path.equals("/")) {
+                throw new SQLException("DATABASE_URL format galat hai.");
+            }
+
+            int port = uri.getPort() == -1 ? 5432 : uri.getPort();
+
+            String jdbcUrl = "jdbc:postgresql://"
+                + uri.getHost() + ":" + port + path;
+
+            return DriverManager.getConnection(
+                jdbcUrl, databaseUser, databasePassword
+            );
+        } catch (IllegalArgumentException e) {
+            throw new SQLException("DATABASE_URL format galat hai.", e);
         }
     }
 
-    static void loadStudents() {
-        if (!Files.exists(DATA_FILE)) return;
+    static void initDatabase() throws SQLException {
+        try (Connection connection = databaseConnection();
+             Statement statement = connection.createStatement()) {
 
-        try {
-            String json = Files.readString(DATA_FILE, StandardCharsets.UTF_8);
-            Pattern objectPattern = Pattern.compile("\\{([^{}]*)\\}");
-            Matcher matcher = objectPattern.matcher(json);
+            statement.executeUpdate(
+                "CREATE TABLE IF NOT EXISTS attendance_students (" +
+                "roll TEXT PRIMARY KEY, " +
+                "name TEXT NOT NULL, " +
+                "days INTEGER NOT NULL DEFAULT 0, " +
+                "present INTEGER NOT NULL DEFAULT 0, " +
+                "today TEXT NOT NULL DEFAULT '')"
+            );
 
-            while (matcher.find()) {
-                String object = matcher.group(1);
-                Map<String, String> student = new HashMap<>();
-                student.put("name", getValue(object, "name"));
-                student.put("roll", getValue(object, "roll"));
-                student.put("days", getValue(object, "days", "0"));
-                student.put("present", getValue(object, "present", "0"));
-                student.put("today", getValue(object, "today", ""));
+            students.clear();
 
-                if (!student.get("roll").isEmpty()) {
+            try (ResultSet result = statement.executeQuery(
+                    "SELECT name, roll, days, present, today " +
+                    "FROM attendance_students ORDER BY roll")) {
+
+                while (result.next()) {
+                    Map<String, String> student = new HashMap<>();
+                    student.put("name", result.getString("name"));
+                    student.put("roll", result.getString("roll"));
+                    student.put("days", String.valueOf(result.getInt("days")));
+                    student.put("present", String.valueOf(result.getInt("present")));
+                    student.put("today", result.getString("today"));
+
                     students.add(student);
                 }
             }
-        } catch (IOException e) {
-            System.err.println("Could not load students: " + e.getMessage());
+        }
+
+        System.out.println(
+            "PostgreSQL connected. Loaded " + students.size() + " students."
+        );
+    }
+
+    static synchronized void saveStudents() {
+        try (Connection connection = databaseConnection()) {
+            connection.setAutoCommit(false);
+
+            try {
+                try (Statement statement = connection.createStatement()) {
+                    statement.executeUpdate("DELETE FROM attendance_students");
+                }
+
+                try (PreparedStatement statement = connection.prepareStatement(
+                        "INSERT INTO attendance_students " +
+                        "(roll, name, days, present, today) VALUES (?, ?, ?, ?, ?)")) {
+
+                    for (Map<String, String> student : students) {
+                        statement.setString(1, student.get("roll"));
+                        statement.setString(2, student.get("name"));
+                        statement.setInt(3, number(student.get("days")));
+                        statement.setInt(4, number(student.get("present")));
+                        statement.setString(5, student.getOrDefault("today", ""));
+                        statement.addBatch();
+                    }
+
+                    statement.executeBatch();
+                }
+
+                connection.commit();
+            } catch (SQLException e) {
+                connection.rollback();
+                throw e;
+            }
+        } catch (SQLException e) {
+            System.err.println("Could not save students to PostgreSQL: "
+                + e.getMessage());
         }
     }
 
