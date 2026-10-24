@@ -16,7 +16,7 @@ public class App {
         System.getenv().getOrDefault("DATA_FILE", "students.json")
     ).toAbsolutePath();
 
-    public static void main(String[] args) throws IOException {
+    public static void main(String[] args) throws Exception {
         loadStudents();
 
         int port = Integer.parseInt(
@@ -37,6 +37,38 @@ public class App {
             if (exchange.getRequestMethod().equals("OPTIONS")) {
                 exchange.sendResponseHeaders(204, -1);
                 exchange.close();
+                return;
+            }
+
+            SessionManager.Session session = AuthApi.requireSession(exchange);
+            if (session == null) {
+                return;
+            }
+
+            String method = exchange.getRequestMethod();
+
+            if (method.equals("POST") || method.equals("PUT")
+                    || method.equals("DELETE")) {
+                if (!"ADMIN".equals(session.role)
+                        && !"TEACHER".equals(session.role)) {
+                    AuthApi.sendError(exchange, 403, "Forbidden");
+                    return;
+                }
+            }
+
+            if (method.equals("GET") && "STUDENT".equals(session.role)) {
+                Map<String, String> own = null;
+
+                synchronized (students) {
+                    for (Map<String, String> student : students) {
+                        if (student.get("roll").equals(session.linkedRoll)) {
+                            own = student;
+                            break;
+                        }
+                    }
+                }
+
+                send(exchange, 200, own == null ? "[]" : toJson(List.of(own)));
                 return;
             }
 
@@ -179,6 +211,9 @@ public class App {
             send(exchange, 405, "{\"error\":\"Method not allowed\"}");
         });
 
+        AuthRoutes.initializeAccounts();
+        AuthRoutes.register(server);
+
         server.start();
         System.out.println("Smart Attendance Backend started on port 8081");
     }
@@ -188,7 +223,7 @@ public class App {
         exchange.getResponseHeaders().set(
             "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
         exchange.getResponseHeaders().set(
-            "Access-Control-Allow-Headers", "Content-Type");
+            "Access-Control-Allow-Headers", "Content-Type, Authorization");
     }
 
     static String getValue(String json, String key) {

@@ -23,6 +23,24 @@ th,td{padding:8px 4px;border-bottom:1px solid #ddd;text-align:center;font-size:1
 <p>Student Attendance Management System</p>
 </header>
 
+<div class="card" id="loginCard">
+<h2>🔐 Login</h2>
+<form id="loginForm">
+<input id="loginUsername" autocomplete="username"
+       placeholder="Username" required>
+<input id="loginPassword" type="password"
+       autocomplete="current-password" placeholder="Password" required>
+<button type="submit">Login</button>
+</form>
+<p id="loginMessage" role="status"></p>
+</div>
+
+<div id="attendanceApp" hidden>
+<div class="card">
+<p id="accountInfo"></p>
+<button id="logoutButton" type="button" hidden>Logout</button>
+</div>
+
 <div class="card">
 <h2>Add Student</h2>
 <input id="name" placeholder="Enter student name">
@@ -47,22 +65,108 @@ style="width:90%;padding:10px;margin:10px 0;border-radius:8px;border:1px solid #
 <p>Absent: <span id="absent">0</span></p>
 <p>Overall Attendance: <span id="percentage">0%</span></p>
 </div>
+</div>
 <script>
 const API = "https://smart-attendance-management-system-nns0.onrender.com/api/students";
+const LOGIN_API = "https://smart-attendance-management-system-nns0.onrender.com/api/login";
+const LOGOUT_API = "https://smart-attendance-management-system-nns0.onrender.com/api/logout";
+
 let students = [];
+let token = sessionStorage.getItem("attendanceToken") || "";
+let currentUser = JSON.parse(sessionStorage.getItem("attendanceUser") || "null");
+
+function apiFetch(url, options = {}) {
+    const headers = {
+        ...(options.headers || {}),
+        "Authorization": "Bearer " + token
+    };
+    return fetch(url, {...options, headers});
+}
+
+function showLoggedIn(user) {
+    currentUser = user;
+    document.getElementById("loginCard").hidden = true;
+    document.getElementById("attendanceApp").hidden = false;
+    document.getElementById("logoutButton").hidden = false;
+    document.getElementById("accountInfo").textContent =
+        "Logged in as " + user.username + " (" + user.role + ")";
+
+    const manager = user.role === "ADMIN" || user.role === "TEACHER";
+    document.getElementById("name").parentElement.hidden = !manager;
+    loadStudents();
+}
+
+function showLoggedOut() {
+    token = "";
+    currentUser = null;
+    students = [];
+    sessionStorage.removeItem("attendanceToken");
+    sessionStorage.removeItem("attendanceUser");
+    document.getElementById("loginCard").hidden = false;
+    document.getElementById("attendanceApp").hidden = true;
+    document.getElementById("logoutButton").hidden = true;
+    document.getElementById("loginPassword").value = "";
+    document.getElementById("loginMessage").textContent = "";
+}
+
+document.getElementById("loginForm").addEventListener("submit", async event => {
+    event.preventDefault();
+    const message = document.getElementById("loginMessage");
+    message.textContent = "Logging in...";
+
+    try {
+        const response = await fetch(LOGIN_API, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                username: document.getElementById("loginUsername").value.trim(),
+                password: document.getElementById("loginPassword").value
+            })
+        });
+
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Login failed.");
+
+        token = data.token;
+        currentUser = {username: data.username, role: data.role};
+        sessionStorage.setItem("attendanceToken", token);
+        sessionStorage.setItem("attendanceUser", JSON.stringify(currentUser));
+
+        message.textContent = "";
+        showLoggedIn(currentUser);
+    } catch (error) {
+        message.textContent = error.message || "Could not connect to the backend.";
+    }
+});
+
+document.getElementById("logoutButton").addEventListener("click", async () => {
+    try {
+        if (token) {
+            await apiFetch(LOGOUT_API, {method: "POST"});
+        }
+    } finally {
+        showLoggedOut();
+    }
+});
 
 async function loadStudents() {
     try {
-        const response = await fetch(API);
-        if (!response.ok) throw new Error("Could not load students");
+        const response = await apiFetch(API);
+        if (response.status === 401) {
+            showLoggedOut();
+            throw new Error("Session expired. Please log in again.");
+        }
+        if (!response.ok) throw new Error("Could not load students.");
         students = await response.json();
         render();
     } catch (error) {
-        alert("Java backend se connection nahi hua. Check karo ki server running hai.");
+        alert(error.message || "Could not connect to the backend.");
     }
 }
 
 async function addStudent() {
+    if (!currentUser || !["ADMIN", "TEACHER"].includes(currentUser.role)) return;
+
     const name = document.getElementById("name").value.trim();
     const roll = document.getElementById("roll").value.trim();
 
@@ -77,22 +181,13 @@ async function addStudent() {
     }
 
     try {
-        const response = await fetch(API, {
+        const response = await apiFetch(API, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                name: name,
-                roll: roll,
-                days: 0,
-                present: 0,
-                today: ""
-            })
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({name, roll, days: 0, present: 0, today: ""})
         });
-
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || "Student could not be saved");
-        }
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Student could not be saved.");
 
         document.getElementById("name").value = "";
         document.getElementById("roll").value = "";
@@ -104,9 +199,11 @@ async function addStudent() {
 }
 
 async function mark(index, status) {
+    if (!currentUser || !["ADMIN", "TEACHER"].includes(currentUser.role)) return;
     const student = students[index];
-    const today = new Date().toLocaleDateString("en-CA");
+    if (!student) return;
 
+    const today = new Date().toLocaleDateString("en-CA");
     if (student.today === today) {
         alert("Attendance already marked for today.");
         return;
@@ -115,34 +212,30 @@ async function mark(index, status) {
     const updatedStudent = {
         ...student,
         days: Number(student.days || 0) + 1,
-        present: Number(student.present || 0) +
-            (status === "Present" ? 1 : 0),
-        today: today
+        present: Number(student.present || 0) + (status === "Present" ? 1 : 0),
+        today
     };
 
     try {
-        const response = await fetch(API, {
+        const response = await apiFetch(API, {
             method: "PUT",
-            headers: { "Content-Type": "application/json" },
+            headers: {"Content-Type": "application/json"},
             body: JSON.stringify(updatedStudent)
         });
-
-        if (!response.ok) throw new Error("Attendance update failed");
+        if (!response.ok) throw new Error("Attendance update failed.");
         await loadStudents();
     } catch (error) {
         alert(error.message);
     }
 }
 
-
-
 async function editStudent(index) {
+    if (!currentUser || !["ADMIN", "TEACHER"].includes(currentUser.role)) return;
     const student = students[index];
     if (!student) return;
 
     const newName = prompt("Enter student name:", student.name);
     if (newName === null) return;
-
     const newRoll = prompt("Enter roll number:", student.roll);
     if (newRoll === null) return;
 
@@ -152,20 +245,17 @@ async function editStudent(index) {
     }
 
     try {
-        const response = await fetch(API, {
+        const response = await apiFetch(API, {
             method: "PUT",
-            headers: { "Content-Type": "application/json" },
+            headers: {"Content-Type": "application/json"},
             body: JSON.stringify({
                 roll: student.roll,
                 newRoll: newRoll.trim(),
                 name: newName.trim()
             })
         });
-
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.error || "Could not update student.");
-        }
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not update student.");
 
         alert("Student updated successfully!");
         await loadStudents();
@@ -175,58 +265,54 @@ async function editStudent(index) {
 }
 
 async function deleteStudent(index) {
+    if (!currentUser || !["ADMIN", "TEACHER"].includes(currentUser.role)) return;
     const student = students[index];
-
-    if (!student) return;
-
-    if (!confirm("Delete " + student.name + "?")) return;
+    if (!student || !confirm("Delete " + student.name + "?")) return;
 
     try {
-        const response = await fetch(
+        const response = await apiFetch(
             API + "?roll=" + encodeURIComponent(student.roll),
-            { method: "DELETE" }
+            {method: "DELETE"}
         );
-
-        if (!response.ok) {
-            throw new Error("Could not delete student.");
-        }
+        if (!response.ok) throw new Error("Could not delete student.");
 
         alert("Student deleted successfully!");
         await loadStudents();
     } catch (error) {
-        alert("Delete failed. Please check the backend server.");
+        alert(error.message);
     }
 }
 
 function render() {
     const list = document.getElementById("studentList");
-
+    const manager = currentUser && ["ADMIN", "TEACHER"].includes(currentUser.role);
     const searchBox = document.getElementById("searchStudent");
     const query = searchBox ? searchBox.value.trim().toLowerCase() : "";
+
     const filtered = students
-        .map((student, index) => ({ student, index }))
+        .map((student, index) => ({student, index}))
         .filter(item =>
             String(item.student.name).toLowerCase().includes(query) ||
             String(item.student.roll).toLowerCase().includes(query)
         );
 
-    if (filtered.length === 0) {
+    if (!filtered.length) {
         list.textContent = query ? "No matching students found." : "No students added yet.";
     } else {
-        list.innerHTML = "<table><tr><th>Name</th><th>Roll No.</th><th>Attendance</th><th>Action</th></tr>" +
+        list.innerHTML = "<table><tr><th>Name</th><th>Roll No.</th><th>Attendance</th>" +
+            (manager ? "<th>Action</th>" : "") + "</tr>" +
             filtered.map(({student: s, index: i}) =>
                 "<tr><td>" + escapeHTML(s.name) +
                 "</td><td>" + escapeHTML(s.roll) +
-                "</td><td><button class='small-btn' onclick='mark(" + i +
-                ",\"Present\")'>Present</button>" +
-                "<button class='small-btn' onclick='mark(" + i +
-                ",\"Absent\")'>Absent</button><br>" +
-                Number(s.present || 0) + "/" +
-                Number(s.days || 0) +
-                "</td><td><button class='small-btn' onclick='editStudent(" + i +
-                ")'>Edit</button> " +
-                "<button class='small-btn' onclick='deleteStudent(" + i +
-                ")'>Delete</button></td></tr>"
+                "</td><td>" + (manager
+                    ? "<button class='small-btn' onclick='mark(" + i + ",\"Present\")'>Present</button>" +
+                      "<button class='small-btn' onclick='mark(" + i + ",\"Absent\")'>Absent</button><br>"
+                    : "") +
+                Number(s.present || 0) + "/" + Number(s.days || 0) +
+                "</td>" + (manager
+                    ? "<td><button class='small-btn' onclick='editStudent(" + i + ")'>Edit</button>" +
+                      "<button class='small-btn' onclick='deleteStudent(" + i + ")'>Delete</button></td>"
+                    : "") + "</tr>"
             ).join("") + "</table>";
     }
 
@@ -243,15 +329,16 @@ function render() {
 
 function escapeHTML(text) {
     return String(text).replace(/[&<>"']/g, c => ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;"
+        "&": "&amp;", "<": "&lt;", ">": "&gt;",
+        '"': "&quot;", "'": "&#39;"
     }[c]));
 }
 
-loadStudents();
+if (token && currentUser) {
+    showLoggedIn(currentUser);
+} else {
+    showLoggedOut();
+}
 </script>
 
 </body>

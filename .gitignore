@@ -2,3 +2,9 @@
 **/build/
 students.json
 *.class
+# Account databases and local credentials
+*.db
+
+# Local backup files
+*.before-auth
+*.before-login
